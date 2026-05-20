@@ -1,15 +1,399 @@
 <!DOCTYPE html>
 <html>
 <head>
-<title>My AI game</title>
+<meta charset="UTF-8">
+<title>Arena FPS</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; overflow: hidden; font-family: monospace; }
+  canvas { display: block; }
+  #ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+  #crosshair { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 20px; height: 20px; }
+  #crosshair::before, #crosshair::after { content: ''; position: absolute; background: rgba(255,255,255,0.85); }
+  #crosshair::before { width: 2px; height: 100%; left: 50%; transform: translateX(-50%); }
+  #crosshair::after { height: 2px; width: 100%; top: 50%; transform: translateY(-50%); }
+  #hud { position: absolute; bottom: 24px; left: 0; width: 100%; display: flex; justify-content: space-between; padding: 0 24px; color: #fff; font-size: 13px; }
+  #health-bar { width: 140px; height: 8px; background: rgba(255,255,255,0.15); border-radius: 4px; overflow: hidden; margin-top: 6px; }
+  #health-fill { height: 100%; background: #3fa; border-radius: 4px; transition: width 0.2s; }
+  #hit-indicator { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); color: #f44; font-size: 28px; font-weight: bold; opacity: 0; transition: opacity 0.1s; pointer-events: none; }
+  #start-screen { position: absolute; inset: 0; background: rgba(0,0,0,0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; color: #fff; gap: 16px; pointer-events: all; cursor: pointer; }
+  #start-screen h1 { font-size: 36px; font-family: monospace; letter-spacing: 6px; color: #3fa; }
+  #start-screen p { font-size: 13px; color: rgba(255,255,255,0.5); letter-spacing: 1px; }
+  #game-over { position: absolute; inset: 0; background: rgba(0,0,0,0.9); display: none; flex-direction: column; align-items: center; justify-content: center; color: #fff; gap: 12px; pointer-events: all; cursor: pointer; }
+  #game-over h2 { font-size: 32px; font-family: monospace; letter-spacing: 4px; color: #f44; }
+  #wave-flash { position: absolute; top: 40%; left: 50%; transform: translateX(-50%); font-size: 22px; font-weight: bold; color: #3fa; font-family: monospace; letter-spacing: 4px; opacity: 0; pointer-events: none; transition: opacity 0.4s; white-space: nowrap; }
+</style>
 </head>
 <body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <div id="crosshair"></div>
+  <div id="hud">
+    <div>
+      <div style="color:rgba(255,255,255,0.5);font-size:11px;letter-spacing:1px;margin-bottom:2px;">HEALTH</div>
+      <div id="health-bar"><div id="health-fill" style="width:100%"></div></div>
+      <div id="hp-text" style="font-size:11px;color:rgba(255,255,255,0.4);margin-top:3px;">100 / 100</div>
+    </div>
+    <div style="text-align:right">
+      <div id="score" style="font-size:22px;font-weight:bold;">0</div>
+      <div id="kills" style="font-size:12px;color:rgba(255,255,255,0.5);">0 kills</div>
+      <div id="wave-label" style="font-size:11px;color:rgba(255,255,255,0.4);margin-top:2px;">wave 1</div>
+    </div>
+  </div>
+  <div id="hit-indicator">HIT!</div>
+  <div id="wave-flash"></div>
+</div>
+<div id="start-screen">
+  <h1>ARENA FPS</h1>
+  <p>CLICK TO LOCK MOUSE — THEN CLICK TO SHOOT</p>
+  <p style="font-size:12px;color:rgba(255,255,255,0.4);">WASD / ARROW KEYS to move &nbsp;·&nbsp; MOUSE to aim &nbsp;·&nbsp; CLICK to fire</p>
+</div>
+<div id="game-over">
+  <h2>GAME OVER</h2>
+  <div id="final-score" style="font-size:22px;font-family:monospace;color:#fff;"></div>
+  <div style="font-size:13px;color:rgba(255,255,255,0.4);margin-top:8px;">click to restart</div>
+</div>
 
-<h1>AI game goes here</h1>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const startScreen = document.getElementById('start-screen');
+const gameOverEl = document.getElementById('game-over');
+const scoreEl = document.getElementById('score');
+const killsEl = document.getElementById('kills');
+const healthFill = document.getElementById('health-fill');
+const hpText = document.getElementById('hp-text');
+const hitIndicator = document.getElementById('hit-indicator');
+const waveFlash = document.getElementById('wave-flash');
+const waveLabel = document.getElementById('wave-label');
+const finalScore = document.getElementById('final-score');
 
+let W, H;
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
 
+const FOV = Math.PI / 3;
+const HALF_FOV = FOV / 2;
+const RAYS = 320;
+const MAX_DEPTH = 20;
+const MAP_W = 16, MAP_H = 16;
 
-<script src="game.js"></script>
+const MAP = [
+  1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+  1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+  1,0,0,0,0,0,1,1,0,1,0,0,0,0,0,1,
+  1,0,0,0,0,0,1,0,0,1,0,0,0,0,0,1,
+  1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+  1,0,0,1,0,0,0,0,0,0,0,0,1,0,0,1,
+  1,0,0,1,0,0,0,0,0,0,0,0,1,0,0,1,
+  1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+  1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+  1,0,0,1,0,0,0,0,0,0,0,0,1,0,0,1,
+  1,0,0,1,0,0,0,0,0,0,0,0,1,0,0,1,
+  1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+  1,0,0,0,0,0,1,0,0,1,0,0,0,0,0,1,
+  1,0,0,0,0,0,1,1,0,1,0,0,0,0,0,1,
+  1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+  1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+];
+
+function isWall(x, y) {
+  const mx = Math.floor(x), my = Math.floor(y);
+  if (mx < 0 || mx >= MAP_W || my < 0 || my >= MAP_H) return true;
+  return MAP[my * MAP_W + mx] === 1;
+}
+
+let player = { x: 8, y: 8, angle: 0, speed: 0.05, hp: 100, maxHp: 100 };
+let enemies = [], bullets = [], particles = [];
+let score = 0, kills = 0, wave = 1;
+let gameRunning = false;
+let lastTime = 0;
+let keys = {};
+let mouseDX = 0;
+let pointerLocked = false;
+let hitFlash = 0;
+let gunAnim = 0, gunFired = false;
+let spawnTimer = 0;
+let waveKills = 0, waveKillsNeeded = 5;
+let waveFlashTimer = 0;
+
+function spawnEnemy() {
+  const edges = [
+    () => ({ x: 1.5 + Math.random() * (MAP_W - 3), y: 1.5 }),
+    () => ({ x: 1.5 + Math.random() * (MAP_W - 3), y: MAP_H - 1.5 }),
+    () => ({ x: 1.5, y: 1.5 + Math.random() * (MAP_H - 3) }),
+    () => ({ x: MAP_W - 1.5, y: 1.5 + Math.random() * (MAP_H - 3) }),
+  ];
+  const pos = edges[Math.floor(Math.random() * edges.length)]();
+  if (!isWall(pos.x, pos.y)) {
+    enemies.push({ x: pos.x, y: pos.y, hp: 2, angle: 0, fireTimer: Math.random() * 2, alertDist: 8 });
+  }
+}
+
+function startGame() {
+  player = { x: 8, y: 8, angle: 0, speed: 0.05, hp: 100, maxHp: 100 };
+  enemies = []; bullets = []; particles = [];
+  score = 0; kills = 0; wave = 1; waveKills = 0; waveKillsNeeded = 5;
+  scoreEl.textContent = '0';
+  killsEl.textContent = '0 kills';
+  waveLabel.textContent = 'wave 1';
+  for (let i = 0; i < 4; i++) spawnEnemy();
+  gameRunning = true;
+  startScreen.style.display = 'none';
+  gameOverEl.style.display = 'none';
+  requestAnimationFrame(loop);
+}
+
+startScreen.addEventListener('click', () => canvas.requestPointerLock());
+gameOverEl.addEventListener('click', () => { canvas.requestPointerLock(); startGame(); });
+
+document.addEventListener('pointerlockchange', () => {
+  pointerLocked = document.pointerLockElement === canvas;
+  if (pointerLocked && !gameRunning) startGame();
+});
+
+document.addEventListener('mousemove', e => {
+  if (pointerLocked) mouseDX += e.movementX * 0.002;
+});
+
+canvas.addEventListener('click', () => {
+  if (!pointerLocked) { canvas.requestPointerLock(); return; }
+  if (!gameRunning) return;
+  fireBullet();
+});
+
+document.addEventListener('keydown', e => { keys[e.code] = true; });
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+function fireBullet() {
+  bullets.push({ x: player.x, y: player.y, angle: player.angle, fromPlayer: true, dist: 0 });
+  gunFired = true; gunAnim = 0;
+}
+
+function castRay(angle) {
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  let dist = 0, step = 0.01;
+  let x = player.x, y = player.y;
+  while (dist < MAX_DEPTH) {
+    x += cos * step; y += sin * step; dist += step;
+    if (isWall(x, y)) return { dist, side: Math.abs(cos) < Math.abs(sin) ? 0 : 1 };
+    step = Math.min(0.05, dist * 0.03 + 0.01);
+  }
+  return { dist: MAX_DEPTH };
+}
+
+function getEnemyScreenPos(enemy) {
+  const dx = enemy.x - player.x, dy = enemy.y - player.y;
+  let a = Math.atan2(dy, dx) - player.angle;
+  while (a > Math.PI) a -= 2 * Math.PI;
+  while (a < -Math.PI) a += 2 * Math.PI;
+  if (Math.abs(a) > HALF_FOV * 1.2) return null;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  return { sx: (0.5 + a / FOV) * W, sz: H / dist, dist };
+}
+
+function drawScene() {
+  const rayW = W / RAYS;
+  const zBuffer = new Array(RAYS);
+
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H / 2);
+  ctx.fillStyle = '#0d0d0d';
+  ctx.fillRect(0, H / 2, W, H / 2);
+
+  for (let r = 0; r < RAYS; r++) {
+    const rayAngle = player.angle - HALF_FOV + (r / RAYS) * FOV;
+    const ray = castRay(rayAngle);
+    zBuffer[r] = ray.dist;
+    const corrDist = ray.dist * Math.cos(rayAngle - player.angle);
+    const wallH = Math.min(H, H / corrDist);
+    const wallTop = (H - wallH) / 2;
+    const brightness = Math.max(0, 1 - ray.dist / MAX_DEPTH);
+    const shade = ray.side === 0 ? brightness : brightness * 0.75;
+    const rv = Math.floor(80 * shade), gv = Math.floor(120 * shade), bv = Math.floor(160 * shade);
+    ctx.fillStyle = `rgb(${rv},${gv},${bv})`;
+    ctx.fillRect(r * rayW, wallTop, rayW + 0.5, wallH);
+  }
+
+  enemies.sort((a, b) => {
+    return ((b.x-player.x)**2+(b.y-player.y)**2) - ((a.x-player.x)**2+(a.y-player.y)**2);
+  });
+
+  for (const e of enemies) {
+    const sp = getEnemyScreenPos(e);
+    if (!sp) continue;
+    const rayIdx = Math.floor((sp.sx / W) * RAYS);
+    if (rayIdx < 0 || rayIdx >= RAYS || zBuffer[rayIdx] < sp.dist) continue;
+    const h = sp.sz * 0.7;
+    const x = sp.sx - h / 2, y = H / 2 - h / 2;
+    const fade = Math.max(0, 1 - sp.dist / 10);
+    ctx.fillStyle = `rgba(220,50,50,${fade})`;
+    ctx.fillRect(x, y, h, h);
+    ctx.fillStyle = `rgba(255,100,100,${fade * 0.6})`;
+    ctx.fillRect(x + h * 0.3, y + h * 0.1, h * 0.4, h * 0.4);
+    if (e.hp < 3) {
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(x, y - 8, h, 4);
+      ctx.fillStyle = e.hp === 2 ? '#3fa' : '#fa3';
+      ctx.fillRect(x, y - 8, h * (e.hp / 3), 4);
+    }
+  }
+
+  for (const p of particles) {
+    const a = p.life / p.maxLife;
+    ctx.fillStyle = `rgba(255,220,80,${a})`;
+    ctx.beginPath();
+    ctx.arc(p.sx, p.sy, p.r * a, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  if (hitFlash > 0) {
+    ctx.fillStyle = `rgba(255,0,0,${hitFlash * 0.3})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  const gunW = 160, gunH = 120;
+  const gunX = W / 2 + 40;
+  const gunY = H - gunH + (gunFired ? gunAnim * 20 : 0);
+  ctx.fillStyle = '#222';
+  ctx.fillRect(gunX, gunY, gunW, gunH);
+  ctx.fillStyle = '#333';
+  ctx.fillRect(gunX + 10, gunY + 10, gunW - 40, 20);
+  ctx.fillStyle = '#555';
+  ctx.fillRect(gunX, gunY + 30, 20, gunH - 30);
+  if (gunFired) {
+    ctx.fillStyle = `rgba(255,220,80,${0.8 - gunAnim})`;
+    ctx.beginPath();
+    ctx.arc(gunX + 10, gunY + 20, 12 * (1 - gunAnim), 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function update(dt) {
+  player.angle += mouseDX;
+  mouseDX = 0;
+  while (player.angle > Math.PI) player.angle -= 2 * Math.PI;
+  while (player.angle < -Math.PI) player.angle += 2 * Math.PI;
+
+  if (keys['ArrowLeft']) player.angle -= 0.04;
+  if (keys['ArrowRight']) player.angle += 0.04;
+
+  let dx = 0, dy = 0;
+  if (keys['KeyW'] || keys['ArrowUp']) { dx += Math.cos(player.angle); dy += Math.sin(player.angle); }
+  if (keys['KeyS'] || keys['ArrowDown']) { dx -= Math.cos(player.angle); dy -= Math.sin(player.angle); }
+  if (keys['KeyA']) { dx += Math.cos(player.angle - Math.PI/2); dy += Math.sin(player.angle - Math.PI/2); }
+  if (keys['KeyD']) { dx += Math.cos(player.angle + Math.PI/2); dy += Math.sin(player.angle + Math.PI/2); }
+  const spd = player.speed * dt * 60;
+  const nx = player.x + dx * spd, ny = player.y + dy * spd;
+  if (!isWall(nx, player.y)) player.x = nx;
+  if (!isWall(player.x, ny)) player.y = ny;
+
+  if (gunFired) { gunAnim += dt * 8; if (gunAnim >= 1) { gunFired = false; gunAnim = 0; } }
+  hitFlash = Math.max(0, hitFlash - dt * 3);
+
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.dist += dt * 15; b.x += Math.cos(b.angle) * dt * 15; b.y += Math.sin(b.angle) * dt * 15;
+    if (isWall(b.x, b.y) || b.dist > MAX_DEPTH) { bullets.splice(i, 1); continue; }
+    if (b.fromPlayer) {
+      let hit = false;
+      for (let j = enemies.length - 1; j >= 0; j--) {
+        const e = enemies[j];
+        const ddx = b.x - e.x, ddy = b.y - e.y;
+        if (ddx*ddx + ddy*ddy < 0.15) {
+          e.hp--;
+          hitIndicator.style.opacity = '1';
+          setTimeout(() => { hitIndicator.style.opacity = '0'; }, 120);
+          if (e.hp <= 0) {
+            score += 100 * wave; kills++; waveKills++;
+            scoreEl.textContent = score;
+            killsEl.textContent = kills + ' kill' + (kills !== 1 ? 's' : '');
+            const sp = getEnemyScreenPos(e);
+            if (sp) for (let p = 0; p < 8; p++) particles.push({ sx: sp.sx + (Math.random()-0.5)*sp.sz, sy: H/2+(Math.random()-0.5)*sp.sz*0.5, r: 6+Math.random()*6, life: 1, maxLife: 1, vx: (Math.random()-0.5)*2, vy: -Math.random()*2 });
+            enemies.splice(j, 1);
+            if (waveKills >= waveKillsNeeded) nextWave();
+          }
+          hit = true; break;
+        }
+      }
+      if (hit) bullets.splice(i, 1);
+    } else {
+      const ddx = b.x - player.x, ddy = b.y - player.y;
+      if (ddx*ddx + ddy*ddy < 0.2) {
+        player.hp -= 10; hitFlash = 1; updateHUD(); bullets.splice(i, 1);
+        if (player.hp <= 0) { endGame(); return; }
+      }
+    }
+  }
+
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life -= dt * 2; p.sx += p.vx * 2; p.sy += p.vy * 2; p.vy += dt * 5;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+
+  spawnTimer -= dt;
+  if (spawnTimer <= 0 && enemies.length < 6 + wave * 2 && waveKills < waveKillsNeeded) {
+    spawnEnemy(); spawnTimer = Math.max(1, 3 - wave * 0.2);
+  }
+
+  for (const e of enemies) {
+    const dx2 = player.x - e.x, dy2 = player.y - e.y;
+    const dist = Math.sqrt(dx2*dx2 + dy2*dy2);
+    if (dist < e.alertDist) {
+      e.angle = Math.atan2(dy2, dx2);
+      const spd2 = (0.015 + wave * 0.003) * dt * 60;
+      const enx = e.x + Math.cos(e.angle) * spd2, eny = e.y + Math.sin(e.angle) * spd2;
+      if (!isWall(enx, e.y)) e.x = enx;
+      if (!isWall(e.x, eny)) e.y = eny;
+      e.fireTimer -= dt;
+      if (e.fireTimer <= 0 && dist < 7) {
+        bullets.push({ x: e.x, y: e.y, angle: e.angle + (Math.random()-0.5)*0.15, fromPlayer: false, dist: 0 });
+        e.fireTimer = Math.max(0.8, 2.5 - wave * 0.15);
+      }
+    }
+  }
+
+  if (waveFlashTimer > 0) { waveFlashTimer -= dt; if (waveFlashTimer <= 0) waveFlash.style.opacity = '0'; }
+}
+
+function nextWave() {
+  wave++; waveKills = 0; waveKillsNeeded = 5 + wave * 2;
+  waveLabel.textContent = 'wave ' + wave;
+  waveFlash.textContent = 'WAVE ' + wave;
+  waveFlash.style.opacity = '1';
+  waveFlashTimer = 2;
+  for (let i = 0; i < wave + 2; i++) spawnEnemy();
+}
+
+function updateHUD() {
+  const pct = Math.max(0, player.hp / player.maxHp * 100);
+  healthFill.style.width = pct + '%';
+  healthFill.style.background = pct > 50 ? '#3fa' : pct > 25 ? '#fa3' : '#f44';
+  hpText.textContent = Math.max(0, player.hp) + ' / ' + player.maxHp;
+}
+
+function endGame() {
+  gameRunning = false;
+  finalScore.textContent = 'score: ' + score + '  ·  kills: ' + kills;
+  gameOverEl.style.display = 'flex';
+  document.exitPointerLock();
+}
+
+function loop(ts) {
+  const dt = Math.min((ts - lastTime) / 1000, 0.05);
+  lastTime = ts;
+  if (!gameRunning) return;
+  update(dt);
+  drawScene();
+  updateHUD();
+  requestAnimationFrame(loop);
+}
+</script>
 </body>
 </html>
 
